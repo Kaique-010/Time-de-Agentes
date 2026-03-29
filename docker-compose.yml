@@ -1,0 +1,23 @@
+services:
+  api:
+    build: .
+    ports:
+      - "8000:8000"
+    environment:
+      DJANGO_PROJECT_PATH: /out
+      AGENTES_AGNO_ARTIFACT_DIR: /out/artifacts
+      OPENAI_API_KEY: ${OPENAI_API_KEY}
+    volumes:
+      - ./out:/out
+
+  mcp:
+    build: .
+    command: ["python", "-m", "agentes_agno.mcp.server"]
+    ports:
+      - "8001:8001"
+    environment:
+      MCP_TRANSPORT: sse
+      MCP_MOUNT_PATH: /
+      FASTMCP_HOST: 0.0.0.0
+      FASTMCP_PORT: 8001
+      OPENAI_API_KEY: ${OPENAI_API_KEY}

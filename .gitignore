@@ -1,0 +1,6 @@
+.env
+venv
+cache/
+*.log
+migrations/
+/db/

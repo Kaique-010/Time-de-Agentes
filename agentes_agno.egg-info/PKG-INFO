@@ -1,0 +1,9 @@
+Metadata-Version: 2.4
+Name: agentes-agno
+Version: 1.0.0
+Requires-Dist: agno
+Requires-Dist: openai
+Requires-Dist: python-dotenv
+Requires-Dist: fastapi
+Requires-Dist: django
+Requires-Dist: uvicorn[standard]

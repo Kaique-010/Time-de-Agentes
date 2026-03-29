@@ -1,0 +1,17 @@
+README.md
+pyproject.toml
+agentes_agno/__init__.py
+agentes_agno/time.py
+agentes_agno.egg-info/PKG-INFO
+agentes_agno.egg-info/SOURCES.txt
+agentes_agno.egg-info/dependency_links.txt
+agentes_agno.egg-info/requires.txt
+agentes_agno.egg-info/top_level.txt
+agentes_agno/agentes/orquestrador.py
+agentes_agno/core/contexto.py
+agentes_agno/core/executor.py
+agentes_agno/core/gravador_arquivos.py
+agentes_agno/core/introspector_django.py
+agentes_agno/core/llm.py
+agentes_agno/integrations/fastapi_adapter.py
+agentes_agno/mcp/server.py

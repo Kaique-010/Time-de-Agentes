@@ -1,0 +1,377 @@
+<!doctype html>
+<html lang="pt-BR">
+
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Time de Agentes • FastAPI</title>
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600&display=swap" rel="stylesheet">
+  <style>
+    :root {
+      --bg: #0f172a;
+      --card: #111827;
+      --muted: #94a3b8;
+      --text: #e5e7eb;
+      --primary: #22c55e;
+      --accent: #60a5fa;
+      --danger: #ef4444;
+      --border: #1f2937;
+      --stage: #a78bfa;
+      --mono: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+    }
+
+    * {
+      box-sizing: border-box
+    }
+
+    html,
+    body {
+      height: 100%
+    }
+
+    body {
+      margin: 0;
+      background: linear-gradient(180deg, #0b1020, var(--bg));
+      color: var(--text);
+      font-family: Inter, system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif;
+      display: grid;
+      place-items: center;
+    }
+
+    .wrap {
+      width: min(980px, 92vw);
+      padding: 32px
+    }
+
+    .title {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      margin-bottom: 20px;
+    }
+
+    .title .badge {
+      background: #0ea5e9;
+      color: white;
+      padding: 6px 10px;
+      border-radius: 999px;
+      font-size: 12px;
+      font-weight: 600
+    }
+
+    .card {
+      background: linear-gradient(180deg, #0e1325, var(--card));
+      border: 1px solid var(--border);
+      border-radius: 16px;
+      padding: 20px;
+      box-shadow: 0 12px 30px rgba(0, 0, 0, 0.35);
+    }
+
+    .grid {
+      display: grid;
+      grid-template-columns: 1.2fr 1fr;
+      gap: 18px
+    }
+
+    .group {
+      display: grid;
+      gap: 12px
+    }
+
+    label {
+      font-size: 13px;
+      color: var(--muted);
+      margin-bottom: 6px
+    }
+
+    .input,
+    .date {
+      width: 100%;
+      border: 1px solid var(--border);
+      background: #0b1322;
+      color: var(--text);
+      padding: 10px 12px;
+      border-radius: 10px;
+      outline: none;
+    }
+
+    .drop {
+      border: 1.5px dashed #334155;
+      border-radius: 12px;
+      padding: 18px;
+      text-align: center;
+      background: #0b1322;
+      color: var(--muted);
+    }
+
+    .drop:hover {
+      border-color: var(--accent);
+      color: var(--text)
+    }
+
+    .row {
+      display: flex;
+      gap: 12px
+    }
+
+    .btn {
+      cursor: pointer;
+      border: none;
+      border-radius: 10px;
+      padding: 12px 16px;
+      font-weight: 600;
+      background: var(--primary);
+      color: #06240f;
+      transition: transform .08s ease, filter .15s ease;
+    }
+
+    .btn.secondary {
+      background: var(--accent);
+      color: #0a1c2b
+    }
+
+    .btn.danger {
+      background: var(--danger);
+      color: #2b0a0a
+    }
+
+    .btn:hover {
+      transform: translateY(-1px);
+      filter: brightness(1.05)
+    }
+
+    .logs {
+      height: 360px;
+      overflow: auto;
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      background: #0b1322;
+      padding: 14px;
+      font-family: var(--mono);
+      font-size: 12.5px;
+      line-height: 1.55;
+    }
+
+    .logline {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 4px 0;
+      border-bottom: 1px dashed #1f2937
+    }
+
+    .logline:last-child {
+      border-bottom: none
+    }
+
+    .stage {
+      color: var(--stage);
+      font-weight: 600
+    }
+
+    .meta {
+      color: var(--muted)
+    }
+
+    .summary {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 12px;
+      margin-top: 14px;
+    }
+
+    .pill {
+      background: #0b1322;
+      border: 1px solid var(--border);
+      padding: 10px 12px;
+      border-radius: 10px;
+      font-size: 13px;
+    }
+
+    .footer {
+      margin-top: 18px;
+      font-size: 12px;
+      color: var(--muted)
+    }
+
+    .hidden {
+      display: none
+    }
+  </style>
+</head>
+
+<body>
+  <div class="wrap">
+    <div class="title">
+      <h1 style="margin:0">Time de Agentes</h1>
+      <span class="badge">FastAPI • SSE</span>
+    </div>
+    <div class="card">
+      <div class="grid">
+        <div class="group">
+          <label>Arquivo models.py</label>
+          <div class="drop" id="drop">
+            Arraste o arquivo aqui ou selecione abaixo
+          </div>
+          <input type="file" class="input" name="file" id="file" />
+          <div class="row">
+            <div style="flex:1">
+              <label>Início</label>
+              <input type="date" class="date" id="inicio" />
+            </div>
+            <div style="flex:1">
+              <label>Fim</label>
+              <input type="date" class="date" id="fim" />
+            </div>
+          </div>
+          <div class="row">
+            <button class="btn" id="btnStart">Enviar e Executar</button>
+            <button class="btn secondary hidden" id="btnStop">Parar Stream</button>
+          </div>
+          <div class="summary">
+            <div class="pill" id="pillModelo">Modelo: —</div>
+            <div class="pill" id="pillPeriodo">Período: —</div>
+            <div class="pill" id="pillStatus">Status: Aguardando</div>
+          </div>
+        </div>
+        <div class="group">
+          <label>Logs em tempo real</label>
+          <div class="logs" id="logs"></div>
+        </div>
+      </div>
+      <div class="footer">Agentes: Carregador • Buscador • Montador • Orquestrador • Revisor</div>
+    </div>
+  </div>
+  <script>
+    const logs = document.getElementById('logs')
+    const fileInput = document.getElementById('file')
+    const drop = document.getElementById('drop')
+    const inicioEl = document.getElementById('inicio')
+    const fimEl = document.getElementById('fim')
+    const btnStart = document.getElementById('btnStart')
+    const btnStop = document.getElementById('btnStop')
+    const pillModelo = document.getElementById('pillModelo')
+    const pillPeriodo = document.getElementById('pillPeriodo')
+    const pillStatus = document.getElementById('pillStatus')
+    let es = null
+    let currentModel = null
+
+    function appendLine(objOrText) {
+      const line = document.createElement('div')
+      line.className = 'logline'
+      if (typeof objOrText === 'string') {
+        line.innerHTML = `<span class="stage">RAW</span><span class="meta">${objOrText}</span>`
+      } else {
+        const stage = objOrText.stage || (objOrText.final ? 'FINAL' : 'LOG')
+        const msg = objOrText.msg ?? ''
+        const detail = JSON.stringify(objOrText)
+        line.innerHTML = `<span class="stage">${stage}</span><span class="meta">${msg}</span><span style="margin-left:auto;color:#64748b">${detail}</span>`
+      }
+      logs.appendChild(line)
+      logs.scrollTop = logs.scrollHeight
+    }
+
+    async function triggerDownload(url, attempts = 12) {
+      url = normalizeDownloadUrl(url)
+      for (let i = 0; i < attempts; i++) {
+        try {
+          const head = await fetch(url, { method: 'HEAD' })
+          if (head.ok) {
+            const iframe = document.createElement('iframe')
+            iframe.style.display = 'none'
+            iframe.src = url
+            document.body.appendChild(iframe)
+            setTimeout(() => iframe.remove(), 60000)
+            return
+          }
+        } catch { }
+        await new Promise(r => setTimeout(r, 800))
+      }
+      appendLine({ stage: 'DOWNLOAD', msg: 'Não foi possível baixar automaticamente. Clique em "Baixar Artefatos".', url })
+    }
+
+    function normalizeDownloadUrl(url) {
+      if (!url) return url
+      if (url.startsWith('http://') || url.startsWith('https://')) return url
+      if (url.startsWith('/')) return url
+      if (url.startsWith('api/')) return `/${url}`
+      if (url.startsWith('download-zip')) return `/api/${url}`
+      return `/api/${url}`
+    }
+
+    drop.addEventListener('dragover', (e) => { e.preventDefault(); drop.style.borderColor = '#60a5fa'; drop.style.color = '#e5e7eb' })
+    drop.addEventListener('dragleave', () => { drop.style.borderColor = '#334155'; drop.style.color = '#94a3b8' })
+    drop.addEventListener('drop', (e) => {
+      e.preventDefault()
+      const f = e.dataTransfer.files?.[0]
+      if (f) { fileInput.files = e.dataTransfer.files; drop.textContent = `Selecionado: ${f.name}` }
+    })
+
+    btnStart.addEventListener('click', async (e) => {
+      e.preventDefault()
+      logs.innerHTML = ''
+      pillStatus.textContent = 'Status: Processando'
+      const fd = new FormData()
+      const file = fileInput.files[0]
+      if (!file) { appendLine('Nenhum arquivo selecionado'); return }
+      fd.append('file', file)
+      const inicio = inicioEl.value
+      const fim = fimEl.value
+      pillPeriodo.textContent = `Período: ${inicio || '—'} → ${fim || '—'}`
+      try {
+        const up = await fetch('/api/upload', { method: 'POST', body: fd })
+        const j = await up.json()
+        if (!j.ok) { appendLine('Falha no upload'); pillStatus.textContent = 'Status: Erro'; return }
+        pillModelo.textContent = `Modelo: ${j.modelo}`
+        currentModel = j.modelo
+        appendLine({ stage: 'UPLOAD', msg: 'Contrato e artefatos gerados', artefatos: j.artefatos })
+        es = new EventSource(`/api/stream?modelo=${encodeURIComponent(j.modelo)}&inicio=${encodeURIComponent(inicio)}&fim=${encodeURIComponent(fim)}`)
+        btnStop.classList.remove('hidden')
+        es.onmessage = (ev) => {
+          let data = ev.data
+          try {
+            let obj
+            try {
+              obj = JSON.parse(data)
+            } catch {
+              const norm = data.replace(/'/g, '"')
+              obj = JSON.parse(norm)
+            }
+            appendLine(obj)
+            if (obj.final) {
+              pillStatus.textContent = 'Status: Concluído'
+              btnStop.classList.add('hidden')
+              es.close()
+              const url = normalizeDownloadUrl(obj.download_url || `/api/download-zip?modelo=${encodeURIComponent(currentModel)}`)
+              const dl = document.createElement('a')
+              dl.className = 'btn secondary'
+              dl.textContent = 'Baixar Artefatos'
+              dl.style.marginTop = '12px'
+              dl.href = url
+              dl.download = ''
+              logs.parentElement.appendChild(dl)
+              triggerDownload(url)
+            }
+          } catch {
+            appendLine(data)
+          }
+        }
+        es.onerror = () => { appendLine('Stream encerrado'); btnStop.classList.add('hidden'); pillStatus.textContent = 'Status: Encerrado'; es?.close() }
+      } catch (err) {
+        appendLine('Erro geral ao iniciar fluxo')
+        pillStatus.textContent = 'Status: Erro'
+      }
+    })
+
+    btnStop.addEventListener('click', (e) => {
+      e.preventDefault()
+      es?.close()
+      btnStop.classList.add('hidden')
+      pillStatus.textContent = 'Status: Encerrado'
+      appendLine('Solicitado encerramento do stream')
+    })
+  </script>
+</body>
+
+</html>
