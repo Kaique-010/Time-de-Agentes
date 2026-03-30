@@ -54,9 +54,37 @@ async def upload(file: UploadFile = File(...)):
     }
 
 
+@app.post("/api/upload-doc")
+async def upload_doc(file: UploadFile = File(...)):
+    content_bytes = await file.read()
+    filename = file.filename or "documentacao"
+    ext = Path(filename).suffix.lower()
+    modelo = f"{Path(filename).stem}-{uuid4().hex[:8]}"
+
+    payload: dict = {"filename": filename}
+    if ext in {".html", ".htm"}:
+        try:
+            payload["documentacao_html"] = content_bytes.decode("utf-8")
+        except UnicodeDecodeError:
+            payload["documentacao_html"] = content_bytes.decode("latin-1")
+    elif ext == ".pdf":
+        import base64
+
+        payload["documentacao_pdf_base64"] = base64.b64encode(content_bytes).decode("ascii")
+    else:
+        try:
+            payload["documentacao_texto"] = content_bytes.decode("utf-8")
+        except UnicodeDecodeError:
+            payload["documentacao_texto"] = content_bytes.decode("latin-1")
+
+    _UPLOADS[modelo] = payload
+    return {"ok": True, "modelo_doc": modelo, "arquivo": filename}
+
+
 @app.get("/api/stream")
 def stream(
     modelo: str = Query(..., min_length=1),
+    modelo_doc: str | None = Query(default=None),
     inicio: str | None = Query(default=None),
     fim: str | None = Query(default=None),
 ):
@@ -88,7 +116,7 @@ def stream(
             yield sse({"stage": "FINAL", "final": True, "msg": "Modelo não encontrado", "ok": False})
             return
 
-        yield sse({"stage": "CONTEXT", "msg": "Montando tarefa", "modelo": modelo, "inicio": inicio, "fim": fim})
+        yield sse({"stage": "CONTEXT", "msg": "Montando tarefa e contexto", "modelo": modelo, "inicio": inicio, "fim": fim})
 
         tarefa = (
             "A partir do arquivo models.py abaixo, gere uma camada completa de API.\n"
@@ -106,11 +134,24 @@ def stream(
             f"{info['content']}"
         )
         extras = {"models_py": info["content"], "inicio": inicio, "fim": fim, "modelo_upload": modelo}
+        if modelo_doc:
+            doc = _UPLOADS.get(modelo_doc)
+            if doc:
+                for k in ("documentacao_texto", "documentacao_html", "documentacao_pdf_base64"):
+                    if k in doc:
+                        extras[k] = doc[k]
+                yield sse({"stage": "DOC", "msg": "Documentação anexada ao fluxo", "modelo_doc": modelo_doc, "arquivo": doc.get("filename")})
+            else:
+                yield sse({"stage": "DOC", "msg": "Modelo de documentação não encontrado", "modelo_doc": modelo_doc})
 
         try:
+            yield sse({"stage": "EXEC", "msg": "Executando agente..."})
             resultado = gerar_backend(tarefa, extras=extras)
         except Exception as e:
             resultado = {"ok": False, "erro": str(e)}
+
+        for ev in (resultado.get("trace") or []):
+            yield sse({"stage": ev.get("etapa", "TRACE"), "msg": ev.get("msg", ""), "meta": ev})
 
         _RESULTS[modelo] = resultado
 

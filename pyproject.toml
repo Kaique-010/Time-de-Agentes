@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "agentes-agno"
 version = "1.0.0"
-dependencies = ["agno", "openai", "python-dotenv", "fastapi", "django", "uvicorn[standard]", "mcp"]
+dependencies = ["agno", "openai", "python-dotenv", "fastapi", "django", "uvicorn[standard]", "mcp", "pypdf"]
 
 [tool.setuptools.packages.find]
 where = ["."]

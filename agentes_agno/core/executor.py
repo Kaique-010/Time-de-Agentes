@@ -1,11 +1,151 @@
-import json
-import re
 import ast
+import json
+import logging
+import re
+from time import perf_counter
 from pathlib import Path
-from agentes_agno.core.contexto import MontadorContexto
-from agentes_agno.time import time_dev
-from agentes_agno.core.gravador_arquivos import GravadorArquivos
 
+from agentes_agno.core.contexto import MontadorContexto
+from agentes_agno.agentes.leitor_documentacao import agente_leitor_documentacao
+from agentes_agno.core.documentacao import LeitorDocumentacao
+from agentes_agno.core.gravador_arquivos import GravadorArquivos
+from agentes_agno.core.rag.engine import RagEngine
+from agentes_agno.core.rag.loader import RagLoader
+from agentes_agno.time import time_dev
+
+
+logger = logging.getLogger("agentes.executor")
+
+
+def _trace(trilha: list[dict], etapa: str, msg: str, **meta):
+    trilha.append({"etapa": etapa, "msg": msg, **meta})
+
+
+def _validar_contratos_documentacao(contratos: object) -> list[dict]:
+    if not isinstance(contratos, list):
+        return []
+
+    out: list[dict] = []
+    for item in contratos:
+        if not isinstance(item, dict):
+            continue
+        endpoint = item.get("endpoint")
+        metodo = item.get("metodo")
+        entrada = item.get("entrada")
+        saida = item.get("saida")
+        regras = item.get("regras")
+
+        if not isinstance(endpoint, str) or not endpoint.strip():
+            continue
+        if not isinstance(metodo, str) or not metodo.strip():
+            continue
+        if entrada is None:
+            entrada = {}
+        if saida is None:
+            saida = {}
+        if regras is None:
+            regras = []
+        out.append(
+            {
+                "endpoint": endpoint.strip(),
+                "metodo": metodo.strip().upper(),
+                "entrada": entrada,
+                "saida": saida,
+                "regras": regras,
+            }
+        )
+    return out
+
+
+def _compilar_politicas_modelos(modelos_upload: dict | None) -> dict:
+    politicas: dict[str, dict] = {}
+    if not isinstance(modelos_upload, dict):
+        return politicas
+
+    for model_name, model_info in modelos_upload.items():
+        campos = model_info.get("campos", []) if isinstance(model_info, dict) else []
+        nomes = [c.get("nome", "").lower() for c in campos if isinstance(c, dict)]
+        tipos = [c.get("tipo", "").lower() for c in campos if isinstance(c, dict)]
+
+        has_status = any("status" in n or "situacao" in n for n in nomes)
+        has_soft_delete = any(n in {"ativo", "inativo"} or "deleted_at" in n or "excluido" in n for n in nomes)
+        has_text = any(t in {"textfield", "charfield"} for t in tipos)
+        has_periodo = any(t in {"datefield", "datetimefield"} for t in tipos) or any("data" in n or "dt_" in n for n in nomes)
+
+        politicas[model_name] = {
+            "normalizar_campos": True,
+            "acoes_obrigatorias": ["resumo", "buscar", "relatorio", "bulk"],
+            "status_transition": has_status,
+            "soft_delete": has_soft_delete,
+            "busca_textual": has_text,
+            "filtros_periodo": has_periodo,
+        }
+    return politicas
+
+
+def _compilar_plano_sicredi_boletos(modelos_upload: dict | None, contratos: list[dict] | None) -> dict:
+    if not isinstance(modelos_upload, dict):
+        return {}
+
+    nomes_modelos = {str(k).lower() for k in modelos_upload.keys()}
+    alvo = {"boleto", "titulosreceber", "remessaretorno", "boletoscancelados", "carteira", "bordero"}
+    if not (nomes_modelos & alvo):
+        return {}
+
+    contratos = contratos or []
+    endpoints = []
+    for c in contratos:
+        if not isinstance(c, dict):
+            continue
+        endpoint = str(c.get("endpoint") or "").lower()
+        metodo = str(c.get("metodo") or "").upper()
+        if endpoint and ("boleto" in endpoint or "cobranca" in endpoint or "sicredi" in endpoint):
+            endpoints.append({"endpoint": endpoint, "metodo": metodo})
+
+    return {
+        "provedor": "sicredi_api_online",
+        "modelos_detectados": sorted(nomes_modelos & alvo),
+        "acoes_recomendadas": [
+            "emitir_boleto",
+            "consultar_boleto",
+            "cancelar_boleto",
+            "baixar_boleto",
+            "registrar_retorno",
+        ],
+        "endpoints_documentados": endpoints,
+        "mapeamentos_minimos": {
+            "Boleto.bole_noss": "nossoNumero",
+            "Boleto.bole_linh_digi": "linhaDigitavel",
+            "Titulosreceber.titu_url_bole": "urlBoleto",
+            "Boletoscancelados.linh_digi": "linhaDigitavel",
+        },
+    }
+
+
+def _gerar_contexto_documentacao(tarefa: str, extras: dict) -> dict:
+    texto_doc = LeitorDocumentacao().extrair_texto(extras)
+    if not texto_doc:
+        return {"texto": "", "contratos": None}
+
+    prompt = (
+        "Analise a documentação abaixo e gere contratos de API úteis para implementação de backend. "
+        "Responda somente JSON válido com chave 'contratos'.\n\n"
+        f"Tarefa alvo:\n{tarefa}\n\n"
+        f"Documentação:\n{texto_doc[:12000]}"
+    )
+
+    logger.info("Analisando documentação com agente dedicado | tamanho=%s", len(texto_doc))
+    resposta_doc = agente_leitor_documentacao.run(prompt)
+    raw_doc = getattr(resposta_doc, "content", resposta_doc)
+
+    try:
+        parsed = _extrair_json(raw_doc)
+    except Exception:
+        logger.exception("Falha ao interpretar JSON do leitor de documentação")
+        parsed = {"contratos": None, "raw": str(raw_doc)}
+
+    contratos = parsed.get("contratos") if isinstance(parsed, dict) else None
+    return {"texto": texto_doc, "contratos": _validar_contratos_documentacao(contratos)}
 def _extrair_json(raw: object):
     if isinstance(raw, (dict, list)):
         return raw
@@ -259,25 +399,71 @@ def _ensure_examples_file(resultado: dict) -> dict:
     return resultado
 
 def executar_tarefa(tarefa: str, extras: dict | None = None):
+    t0 = perf_counter()
     extras = extras or {}
+    trilha: list[dict] = []
+    _trace(trilha, "START", "Iniciando execução")
+    logger.info("Iniciando execução do agente | tarefa=%s", (tarefa or "")[:180])
+
     if "models_py" in extras and "modelos_upload" not in extras and isinstance(extras.get("models_py"), str):
         extras = {**extras, "modelos_upload": _parse_models_py(extras["models_py"])}
+        _trace(trilha, "MODELS", "models.py convertido para modelos_upload", total=len(extras.get("modelos_upload", {})))
 
     if _deve_aplicar_padrao_backend(tarefa, extras):
         tarefa = _aplicar_padrao_backend_na_tarefa(tarefa)
+        _trace(trilha, "PROMPT", "Padrão backend aplicado à tarefa")
 
     contexto = MontadorContexto().montar(tarefa)
 
-    resposta = time_dev.run(
-        tarefa,
-        session_state={**contexto, **extras}
+    contexto_documentacao = _gerar_contexto_documentacao(tarefa, extras)
+    if contexto_documentacao["texto"]:
+        contexto["documentacao_texto"] = contexto_documentacao["texto"]
+        _trace(trilha, "DOC", "Documentação textual carregada", chars=len(contexto_documentacao["texto"]))
+    if contexto_documentacao["contratos"] is not None:
+        contexto["contratos_documentacao"] = contexto_documentacao["contratos"]
+        _trace(trilha, "DOC", "Contratos extraídos da documentação", total=len(contexto_documentacao["contratos"]))
+
+    politicas_modelos = _compilar_politicas_modelos(extras.get("modelos_upload"))
+    if politicas_modelos:
+        contexto["politicas_modelos"] = politicas_modelos
+        _trace(trilha, "POLICY", "Políticas de modelo compiladas", total=len(politicas_modelos))
+
+    plano_sicredi = _compilar_plano_sicredi_boletos(extras.get("modelos_upload"), contexto_documentacao.get("contratos"))
+    if plano_sicredi:
+        contexto["plano_sicredi_boletos"] = plano_sicredi
+        _trace(trilha, "SICREDI", "Plano Sicredi para boletos detectado", modelos=plano_sicredi.get("modelos_detectados", []))
+
+    chunks = RagLoader().carregar_chunks(contexto, extras)
+    rag_engine = RagEngine(chunks)
+    rag_contexto = rag_engine.montar_contexto(tarefa, top_k=4)
+    _trace(trilha, "RAG", "RAG executado", chunks=len(chunks), has_contexto=bool(rag_contexto))
+    tarefa_com_rag = tarefa
+    if rag_contexto:
+        tarefa_com_rag = f"{tarefa}\n\nContexto recuperado (RAG):\n{rag_contexto}"
+    if plano_sicredi:
+        tarefa_com_rag = (
+            f"{tarefa_com_rag}\n\nPlano de implementação Sicredi (boletos):\n"
+            f"{json.dumps(plano_sicredi, ensure_ascii=False)}"
+        )
+
+    logger.info(
+        "Executando agente com RAG | chunks=%s | contexto_recuperado=%s",
+        len(chunks),
+        bool(rag_contexto),
     )
+    resposta = time_dev.run(
+        tarefa_com_rag,
+        session_state={**contexto, **extras, "rag_contexto": rag_contexto, "documentacao": contexto_documentacao},
+    )
+    _trace(trilha, "LLM", "Execução do orquestrador concluída")
 
     raw = getattr(resposta, "content", resposta)
 
     try:
         resultado = _extrair_json(raw)
     except Exception:
+        logger.exception("Falha ao converter resposta da LLM em JSON")
+        _trace(trilha, "ERROR", "Falha ao converter resposta da LLM em JSON")
         return {"erro": "LLM inválida", "raw": raw}
 
     if isinstance(resultado, dict):
@@ -285,9 +471,15 @@ def executar_tarefa(tarefa: str, extras: dict | None = None):
         resultado = _ensure_examples_file(resultado)
 
     arquivos = GravadorArquivos().salvar(resultado)
+    logger.info("Execução finalizada | arquivos_gerados=%s", len(arquivos or []))
+    _trace(trilha, "SAVE", "Arquivos gerados", total=len(arquivos or []))
+    duracao_ms = round((perf_counter() - t0) * 1000, 2)
+    _trace(trilha, "DONE", "Fluxo finalizado", duracao_ms=duracao_ms)
 
     return {
         "ok": True,
         "arquivos": arquivos,
-        "resultado": resultado
+        "resultado": resultado,
+        "trace": trilha,
+        "metricas": {"duracao_ms": duracao_ms, "chunks_rag": len(chunks), "arquivos_gerados": len(arquivos or [])},
     }
