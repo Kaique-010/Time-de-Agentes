@@ -16,9 +16,33 @@ from agentes_agno.time import time_dev
 
 logger = logging.getLogger("agentes.executor")
 
+_MAX_RAG_CHARS = 8000
+_MAX_TAREFA_CHARS = 20000
+_RETRY_TPM_HINTS = (
+    "tokens per min",
+    "request too large",
+    "tpm",
+    "rate limit",
+)
+
 
 def _trace(trilha: list[dict], etapa: str, msg: str, **meta):
     trilha.append({"etapa": etapa, "msg": msg, **meta})
+
+
+def _texto_limitado(texto: str, max_chars: int) -> str:
+    if not isinstance(texto, str):
+        return ""
+    if len(texto) <= max_chars:
+        return texto
+    return texto[:max_chars].rstrip() + "\n...[contexto truncado para caber no limite de tokens]"
+
+
+def _erro_relacionado_a_tokens(err: object) -> bool:
+    if err is None:
+        return False
+    txt = str(err).lower()
+    return any(hint in txt for hint in _RETRY_TPM_HINTS)
 
 
 def _validar_contratos_documentacao(contratos: object) -> list[dict]:
@@ -249,6 +273,9 @@ def _aplicar_padrao_backend_na_tarefa(tarefa: str) -> str:
             "Obrigatório gerar: services, serializers, views/viewsets, urls (urls.py + router) e 1 arquivo de exemplos (requests.http ou examples.py).",
             "Padrão de rota: todos os endpoints devem ser acessíveis sob /api/{slug}/..., onde slug vem na URL (compatível com LicencaMiddleware).",
             "Multi-db: sempre use core.utils.get_licenca_db_config(request) e aplique .using(db) em queries.",
+            "Serializers: normalizar nomes legados para nomes amigáveis usando source='campo_legado' e expor somente nomes normalizados na API.",
+            "Exemplo de normalização: titu_empr->empresa, titu_fili->filial, titu_clie->cliente, titu_titu->titulo, titu_venc->vencimento, titu_valo->valor.",
+            "Services: ir além de CRUD com métodos proativos (resumo/indicadores, busca avançada, relatório por período, bulk, saneamento de filtros e ordenação segura).",
             "No examples/requests.http: usar base http://localhost:8000/api/{slug}/ e incluir headers X-Empresa e X-Filial quando fizer sentido.",
             "",
             "Tarefa:",
@@ -436,10 +463,11 @@ def executar_tarefa(tarefa: str, extras: dict | None = None):
     chunks = RagLoader().carregar_chunks(contexto, extras)
     rag_engine = RagEngine(chunks)
     rag_contexto = rag_engine.montar_contexto(tarefa, top_k=4)
+    rag_contexto = _texto_limitado(rag_contexto or "", _MAX_RAG_CHARS)
     _trace(trilha, "RAG", "RAG executado", chunks=len(chunks), has_contexto=bool(rag_contexto))
-    tarefa_com_rag = tarefa
+    tarefa_com_rag = _texto_limitado(tarefa, _MAX_TAREFA_CHARS)
     if rag_contexto:
-        tarefa_com_rag = f"{tarefa}\n\nContexto recuperado (RAG):\n{rag_contexto}"
+        tarefa_com_rag = f"{tarefa_com_rag}\n\nContexto recuperado (RAG):\n{rag_contexto}"
     if plano_sicredi:
         tarefa_com_rag = (
             f"{tarefa_com_rag}\n\nPlano de implementação Sicredi (boletos):\n"
@@ -451,20 +479,54 @@ def executar_tarefa(tarefa: str, extras: dict | None = None):
         len(chunks),
         bool(rag_contexto),
     )
-    resposta = time_dev.run(
-        tarefa_com_rag,
-        session_state={**contexto, **extras, "rag_contexto": rag_contexto, "documentacao": contexto_documentacao},
-    )
-    _trace(trilha, "LLM", "Execução do orquestrador concluída")
+    session_state_base = {**contexto, **extras, "rag_contexto": rag_contexto, "documentacao": contexto_documentacao}
+    raw = None
+    resultado = None
+    erro_json = None
+    tentativas = [
+        {"suffix": "", "sem_rag": False, "max_chars": _MAX_TAREFA_CHARS},
+        {"suffix": "\n\n[retry] Reduza ao essencial técnico.", "sem_rag": True, "max_chars": 14000},
+        {"suffix": "\n\n[retry] Resposta mínima: apenas arquivos essenciais em JSON.", "sem_rag": True, "max_chars": 9000},
+    ]
 
-    raw = getattr(resposta, "content", resposta)
+    for i, plano_retry in enumerate(tentativas, start=1):
+        tarefa_retry = _texto_limitado(tarefa, plano_retry["max_chars"]) + plano_retry["suffix"]
+        if not plano_retry["sem_rag"] and rag_contexto:
+            tarefa_retry = f"{tarefa_retry}\n\nContexto recuperado (RAG):\n{rag_contexto}"
+        if plano_sicredi:
+            tarefa_retry = (
+                f"{tarefa_retry}\n\nPlano de implementação Sicredi (boletos):\n"
+                f"{json.dumps(plano_sicredi, ensure_ascii=False)}"
+            )
+        try:
+            resposta = time_dev.run(tarefa_retry, session_state=session_state_base)
+            _trace(trilha, "LLM", "Execução do orquestrador concluída", tentativa=i)
+            raw = getattr(resposta, "content", resposta)
+        except Exception as e:
+            _trace(trilha, "RETRY", "Falha de execução da LLM", tentativa=i, erro=str(e)[:300])
+            if i < len(tentativas) and _erro_relacionado_a_tokens(e):
+                logger.warning("Retry por excesso de tokens (tentativa %s/%s)", i, len(tentativas))
+                continue
+            logger.exception("Falha na execução da LLM")
+            return {"erro": "Falha na execução da LLM", "detalhe": str(e)}
 
-    try:
-        resultado = _extrair_json(raw)
-    except Exception:
+        try:
+            resultado = _extrair_json(raw)
+            erro_json = None
+            break
+        except Exception as e:
+            erro_json = e
+            raw_txt = str(raw or "")
+            _trace(trilha, "RETRY", "Falha ao converter resposta da LLM em JSON", tentativa=i, raw_len=len(raw_txt))
+            if i < len(tentativas) and (not raw_txt.strip() or _erro_relacionado_a_tokens(raw_txt)):
+                logger.warning("Retry por resposta vazia/inválida possivelmente ligada a limite de tokens (tentativa %s/%s)", i, len(tentativas))
+                continue
+            break
+
+    if resultado is None:
         logger.exception("Falha ao converter resposta da LLM em JSON")
         _trace(trilha, "ERROR", "Falha ao converter resposta da LLM em JSON")
-        return {"erro": "LLM inválida", "raw": raw}
+        return {"erro": "LLM inválida", "raw": raw, "detalhe": str(erro_json) if erro_json else None}
 
     if isinstance(resultado, dict):
         resultado = _ensure_urls_file(resultado)
