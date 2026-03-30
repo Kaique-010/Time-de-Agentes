@@ -1,5 +1,7 @@
-from agentes_agno.core.introspector_django import DjangoIntrospector
 from pathlib import Path
+
+from agentes_agno.core.introspector_django import DjangoIntrospector
+
 
 class MontadorContexto:
 
@@ -18,4 +20,16 @@ class MontadorContexto:
             "modelos_reais": modelos,
             "exemplo_serializer_normalizado": exemplo_serializer_normalizado,
             "exemplo_service": exemplo_service,
+            "rag_fontes_preferenciais": [
+                "modelos_reais",
+                "models_py",
+                "documentacao_texto",
+                "contratos_documentacao",
+                "README.md",
+                "mdfe.py",
+                "renegociacao_service.py",
+            ],
+            "documentacao_texto": None,
+            "contratos_documentacao": None,
+            "plano_sicredi_boletos": None,
         }
